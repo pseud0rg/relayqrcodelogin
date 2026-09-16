@@ -1,0 +1,104 @@
+name: pseud0-web-login-relay
+
+services:
+  postgres:
+    image: postgres:16.6
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: relay
+      POSTGRES_USER: relay
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - relay_pg:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U relay -d relay"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web-login-relay:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pseud0-web-login-relay:0.1.0
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      LISTEN_ADDR: 0.0.0.0:8080
+      RELAY_ORIGIN: https://relay.pseud0.org
+      MATRIX_HOMESERVER: https://matrix.pseud0.org
+      MATRIX_USER_ID: "@web-login:pseud0.org"
+      MATRIX_ENABLED: "true"
+      RELAY_DB_HOST: postgres
+      RELAY_DB_NAME: relay
+      RELAY_DB_USER: relay
+      RELAY_DB_PASSWORD_FILE: /run/secrets/postgres_password
+      CRYPTO_STORE_PATH: /var/lib/pseud0-relay/crypto
+      DATA_PATH: /var/lib/pseud0-relay/data
+      RELAY_SIGNING_KID: relay-2026-01
+      SUBJECT_KEY_VERSION: "1"
+      RELAY_MATRIX_ACCESS_TOKEN_FILE: /run/secrets/relay_matrix_access_token
+      RELAY_MATRIX_DEVICE_ID_FILE: /run/secrets/relay_matrix_device_id
+      RELAY_CRYPTO_PASSPHRASE_FILE: /run/secrets/relay_crypto_passphrase
+      RELAY_SIGNING_KEY_FILE: /run/secrets/relay_signing_key
+      RELAY_SUBJECT_KEY_FILE: /run/secrets/relay_subject_key_v1
+      RELAY_AT_REST_KEY_FILE: /run/secrets/relay_at_rest_key
+      RELAY_LOOKUP_PEPPER_FILE: /run/secrets/relay_lookup_pepper
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      RUST_LOG: pseud0_web_login_relay=info
+    secrets:
+      - postgres_password
+      - relay_matrix_access_token
+      - relay_matrix_device_id
+      - relay_crypto_passphrase
+      - relay_signing_key
+      - relay_subject_key_v1
+      - relay_at_rest_key
+      - relay_lookup_pepper
+    volumes:
+      - ./relay/crypto-store:/var/lib/pseud0-relay/crypto
+      - ./relay/data:/var/lib/pseud0-relay/data
+    ports:
+      - "8080:8080"
+    networks:
+      - backend
+      - egress
+    healthcheck:
+      test: ["CMD-SHELL", "exit 0"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  backend:
+    internal: true
+  egress:
+
+volumes:
+  relay_pg:
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password
+  relay_matrix_access_token:
+    file: ./secrets/relay_matrix_access_token
+  relay_matrix_device_id:
+    file: ./secrets/relay_matrix_device_id
+  relay_crypto_passphrase:
+    file: ./secrets/relay_crypto_passphrase
+  relay_signing_key:
+    file: ./secrets/relay_signing_key
+  relay_subject_key_v1:
+    file: ./secrets/relay_subject_key_v1
+  relay_at_rest_key:
+    file: ./secrets/relay_at_rest_key
+  relay_lookup_pepper:
+    file: ./secrets/relay_lookup_pepper

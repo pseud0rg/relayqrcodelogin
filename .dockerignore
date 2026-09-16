@@ -1,0 +1,10 @@
+.git
+.gitignore
+target
+relay
+secrets
+.env
+.env.*
+docs
+*.md
+!README.md
