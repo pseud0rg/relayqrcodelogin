@@ -44,8 +44,10 @@ pub async fn invite_is_safe(
         .members(matrix_sdk::RoomMemberships::ACTIVE)
         .await
         .map_err(|_| RelayError::problem(ProblemCode::InternalError))?;
+    let encryption_state = room.encryption_state();
     let invite = InviteSnapshot {
-        encrypted: room.encryption_state().is_encrypted(),
+        encrypted: encryption_state.is_encrypted(),
+        encryption_unknown: encryption_state.is_unknown(),
         is_direct: room.is_direct().await.unwrap_or(false),
         joined_member_count: room.joined_members_count(),
         invited_member_count: room.invited_members_count(),
@@ -60,6 +62,7 @@ pub async fn invite_is_safe(
         tracing::warn!(
             ?reason,
             encrypted = invite.encrypted,
+            encryption_unknown = invite.encryption_unknown,
             is_direct = invite.is_direct,
             joined_member_count = invite.joined_member_count,
             invited_member_count = invite.invited_member_count,
@@ -81,6 +84,9 @@ pub async fn joined_room_is_safe(
     if room.state() != matrix_sdk::RoomState::Joined {
         return Ok(false);
     }
+    room.request_encryption_state()
+        .await
+        .map_err(|_| RelayError::problem(ProblemCode::InternalError))?;
     room.sync_members()
         .await
         .map_err(|_| RelayError::problem(ProblemCode::InternalError))?;
