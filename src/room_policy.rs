@@ -23,7 +23,6 @@ pub struct InviteSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoomPolicyViolation {
     Unencrypted,
-    NotDirect,
     UnexpectedMember,
     UnexpectedSender,
     Guest,
@@ -33,9 +32,8 @@ pub fn check_room(snapshot: &RoomSnapshot) -> Result<(), RoomPolicyViolation> {
     if !snapshot.encrypted {
         return Err(RoomPolicyViolation::Unencrypted);
     }
-    if !snapshot.is_direct {
-        return Err(RoomPolicyViolation::NotDirect);
-    }
+    // `m.direct` is advisory per-account data, not authoritative room state.
+    // The relay defines a protocol DM by encryption and exact membership.
     if snapshot.members.len() != 2 {
         return Err(RoomPolicyViolation::UnexpectedMember);
     }
@@ -64,9 +62,8 @@ pub fn check_invite(snapshot: &InviteSnapshot) -> Result<(), RoomPolicyViolation
     if !snapshot.encrypted && !snapshot.encryption_unknown {
         return Err(RoomPolicyViolation::Unencrypted);
     }
-    if !snapshot.is_direct {
-        return Err(RoomPolicyViolation::NotDirect);
-    }
+    // The inviter's `m.direct` hint is often absent from stripped invite state.
+    // Encryption and exact membership are verified authoritatively after join.
     let summary_unknown = snapshot.joined_member_count == 0 && snapshot.invited_member_count == 0;
     if !summary_unknown && (snapshot.joined_member_count != 1 || snapshot.invited_member_count != 1)
     {
@@ -119,6 +116,9 @@ mod tests {
     #[test]
     fn accepts_encrypted_dm() {
         check_room(&ok_room()).unwrap();
+        let mut without_direct_hint = ok_room();
+        without_direct_hint.is_direct = false;
+        check_room(&without_direct_hint).unwrap();
     }
 
     #[test]
@@ -152,6 +152,12 @@ mod tests {
             ..invite
         };
         check_invite(&stripped_invite).unwrap();
+
+        let invite_without_direct_hint = InviteSnapshot {
+            is_direct: false,
+            ..stripped_invite
+        };
+        check_invite(&invite_without_direct_hint).unwrap();
     }
 
     #[test]
