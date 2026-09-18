@@ -55,7 +55,19 @@ pub async fn invite_is_safe(
             .collect(),
         relay_user_id: relay_user_id.to_string(),
     };
-    Ok(crate::room_policy::check_invite(&invite).is_ok())
+    let decision = crate::room_policy::check_invite(&invite);
+    if let Err(reason) = decision {
+        tracing::warn!(
+            ?reason,
+            encrypted = invite.encrypted,
+            is_direct = invite.is_direct,
+            joined_member_count = invite.joined_member_count,
+            invited_member_count = invite.invited_member_count,
+            visible_member_count = invite.members.len(),
+            "matrix invitation failed pre-join policy"
+        );
+    }
+    Ok(decision.is_ok())
 }
 
 #[cfg(feature = "matrix")]

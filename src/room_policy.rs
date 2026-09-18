@@ -66,10 +66,7 @@ pub fn check_invite(snapshot: &InviteSnapshot) -> Result<(), RoomPolicyViolation
     if !snapshot.is_direct {
         return Err(RoomPolicyViolation::NotDirect);
     }
-    if snapshot.joined_member_count != 1
-        || snapshot.invited_member_count != 1
-        || snapshot.members.len() != 2
-    {
+    if snapshot.joined_member_count != 1 || snapshot.invited_member_count != 1 {
         return Err(RoomPolicyViolation::UnexpectedMember);
     }
     if !snapshot
@@ -84,10 +81,16 @@ pub fn check_invite(snapshot: &InviteSnapshot) -> Result<(), RoomPolicyViolation
         .iter()
         .filter(|member| *member != &snapshot.relay_user_id)
         .collect::<Vec<_>>();
-    if peers.len() != 1 {
+    // Invite rooms expose stripped state: the inviter's member event may be
+    // absent even though the authoritative summary says 1 joined + 1 invited.
+    // Full membership is fetched and enforced immediately after joining.
+    if peers.len() > 1 {
         return Err(RoomPolicyViolation::UnexpectedMember);
     }
-    if peers[0].ends_with(":guest") || peers[0].contains("guest") {
+    if peers
+        .first()
+        .is_some_and(|peer| peer.ends_with(":guest") || peer.contains("guest"))
+    {
         return Err(RoomPolicyViolation::Guest);
     }
     Ok(())
@@ -136,6 +139,12 @@ mod tests {
             relay_user_id: MATRIX_USER_ID.into(),
         };
         check_invite(&invite).unwrap();
+
+        let stripped_invite = InviteSnapshot {
+            members: vec![MATRIX_USER_ID.into()],
+            ..invite
+        };
+        check_invite(&stripped_invite).unwrap();
     }
 
     #[test]
