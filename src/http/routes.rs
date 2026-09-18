@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -44,10 +44,20 @@ async fn ready(State(state): State<AppState>) -> Response {
     if crate::db::ping(&state.pool).await.is_err() {
         return problem(ProblemCode::RelayUnavailable);
     }
-    if !state.sync_ready.load(std::sync::atomic::Ordering::Relaxed) {
+    let sync_running = state.sync_ready.load(std::sync::atomic::Ordering::Relaxed);
+    let last_sync = state
+        .last_matrix_sync_ms
+        .load(std::sync::atomic::Ordering::Relaxed);
+    if !matrix_sync_is_fresh(state.clock.now_ms(), last_sync, sync_running) {
         return problem(ProblemCode::RelayUnavailable);
     }
     (StatusCode::OK, "ready").into_response()
+}
+
+fn matrix_sync_is_fresh(now_ms: i64, last_sync_ms: i64, sync_running: bool) -> bool {
+    sync_running
+        && last_sync_ms > 0
+        && now_ms.saturating_sub(last_sync_ms) <= crate::constants::MATRIX_SYNC_STALE_MS
 }
 
 async fn site_sessions(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
@@ -93,4 +103,24 @@ fn rate_limit_ok() -> bool {
         return true;
     }
     REG_COUNT.fetch_add(1, Ordering::Relaxed) < 30
+}
+
+#[cfg(test)]
+mod tests {
+    use super::matrix_sync_is_fresh;
+    use crate::constants::MATRIX_SYNC_STALE_MS;
+
+    #[test]
+    fn matrix_sync_readiness_requires_a_recent_success() {
+        let now = 1_800_000_000_000;
+        assert!(matrix_sync_is_fresh(now, now, true));
+        assert!(matrix_sync_is_fresh(now, now - MATRIX_SYNC_STALE_MS, true));
+        assert!(!matrix_sync_is_fresh(
+            now,
+            now - MATRIX_SYNC_STALE_MS - 1,
+            true
+        ));
+        assert!(!matrix_sync_is_fresh(now, now, false));
+        assert!(!matrix_sync_is_fresh(now, 0, true));
+    }
 }

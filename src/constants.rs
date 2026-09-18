@@ -21,3 +21,4 @@ pub const MIN_RANDOM_BITS: usize = 128;
 pub const CHALLENGE_BYTES: usize = 16;
 pub const JTI_BYTES: usize = 16;
 pub const ADVISORY_LOCK_KEY: i64 = 0x7073_7564_3031; // "psud01"
+pub const MATRIX_SYNC_STALE_MS: i64 = 120_000;

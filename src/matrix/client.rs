@@ -1,12 +1,12 @@
+use fs4::fs_std::FileExt;
 use std::fs::{self, File};
 use std::path::Path;
-use fs4::fs_std::FileExt;
 #[cfg(feature = "matrix")]
 use std::sync::Arc;
 
-use crate::error::{ProblemCode, RelayError};
 #[cfg(feature = "matrix")]
 use crate::config::AppConfig;
+use crate::error::{ProblemCode, RelayError};
 #[cfg(feature = "matrix")]
 use crate::state::{AppState, MessageSink};
 
@@ -70,7 +70,10 @@ impl MatrixRuntime {
             .restore_session(session)
             .await
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        Ok(Self { client, _lock: lock })
+        Ok(Self {
+            client,
+            _lock: lock,
+        })
     }
 
     pub fn sink(&self) -> Arc<dyn MessageSink> {
@@ -109,8 +112,10 @@ impl MessageSink for MatrixSink {
 
 #[cfg(feature = "matrix")]
 pub async fn sync_forever(state: AppState, runtime: MatrixRuntime) {
+    use matrix_sdk::LoopCtrl;
     use matrix_sdk::config::SyncSettings;
     use matrix_sdk::ruma::events::room::message::{MessageType, OriginalSyncRoomMessageEvent};
+    use std::sync::atomic::Ordering;
 
     let client = runtime.client.clone();
     let app = state.clone();
@@ -124,7 +129,12 @@ pub async fn sync_forever(state: AppState, runtime: MatrixRuntime) {
                     _ => return,
                 };
                 let decrypted = true;
-                let Ok(snapshot) = crate::matrix::rooms::snapshot(&room, event.sender.as_str(), &app.relay_user_id).await
+                let Ok(snapshot) = crate::matrix::rooms::snapshot(
+                    &room,
+                    event.sender.as_str(),
+                    &app.relay_user_id,
+                )
+                .await
                 else {
                     return;
                 };
@@ -142,10 +152,73 @@ pub async fn sync_forever(state: AppState, runtime: MatrixRuntime) {
             }
         },
     );
-    state.sync_ready.store(true, std::sync::atomic::Ordering::Relaxed);
-    if let Err(error) = client.sync(SyncSettings::default()).await {
+    let callback_client = client.clone();
+    let callback_state = state.clone();
+    if let Err(error) = client
+        .sync_with_result_callback(SyncSettings::default(), move |result| {
+            let client = callback_client.clone();
+            let state = callback_state.clone();
+            async move {
+                match result {
+                    Ok(_) => {
+                        if let Err(error) = auto_join_invites(&client, &state.relay_user_id).await {
+                            state.sync_ready.store(false, Ordering::Relaxed);
+                            tracing::warn!(
+                                code = error.code().as_str(),
+                                "matrix invitation processing failed"
+                            );
+                        } else {
+                            state
+                                .last_matrix_sync_ms
+                                .store(state.clock.now_ms(), Ordering::Relaxed);
+                            state.sync_ready.store(true, Ordering::Relaxed);
+                        }
+                    }
+                    Err(error) => {
+                        state.sync_ready.store(false, Ordering::Relaxed);
+                        tracing::warn!(error = %error, "matrix sync request failed");
+                    }
+                }
+                Ok(LoopCtrl::Continue)
+            }
+        })
+        .await
+    {
         tracing::error!(error = %error, "matrix sync ended");
-        state.sync_ready.store(false, std::sync::atomic::Ordering::Relaxed);
+        state.sync_ready.store(false, Ordering::Relaxed);
     }
     let _ = runtime;
+}
+
+#[cfg(feature = "matrix")]
+async fn auto_join_invites(
+    client: &matrix_sdk::Client,
+    relay_user_id: &str,
+) -> Result<(), RelayError> {
+    for room in client.invited_rooms() {
+        if !crate::matrix::rooms::invite_is_safe(&room, relay_user_id).await? {
+            tracing::warn!("rejecting unsafe matrix invitation");
+            room.leave()
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            continue;
+        }
+
+        room.join()
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let joined = client
+            .get_room(room.room_id())
+            .ok_or(RelayError::problem(ProblemCode::InternalError))?;
+        if crate::matrix::rooms::joined_room_is_safe(&joined, relay_user_id).await? {
+            tracing::info!("joined encrypted direct matrix room");
+        } else {
+            tracing::warn!("leaving matrix room that failed post-join policy");
+            joined
+                .leave()
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        }
+    }
+    Ok(())
 }

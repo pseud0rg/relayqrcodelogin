@@ -14,8 +14,8 @@ pub mod room_policy;
 pub mod services;
 pub mod state;
 
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI64};
 
 use crate::clock::SystemClock;
 use crate::config::AppConfig;
@@ -36,14 +36,20 @@ pub async fn run() -> Result<(), RelayError> {
         .await
         .map_err(|_| RelayError::problem(ProblemCode::RelayUnavailable))?;
 
-    if config.matrix_enabled && !db::try_advisory_lock(&pool, ADVISORY_LOCK_KEY)
-        .await
-        .map_err(|_| RelayError::problem(ProblemCode::RelayUnavailable))?
+    if config.matrix_enabled
+        && !db::try_advisory_lock(&pool, ADVISORY_LOCK_KEY)
+            .await
+            .map_err(|_| RelayError::problem(ProblemCode::RelayUnavailable))?
     {
         return Err(RelayError::problem(ProblemCode::RelayUnavailable));
     }
 
     let sync_ready = Arc::new(AtomicBool::new(!config.matrix_enabled));
+    let last_matrix_sync_ms = Arc::new(AtomicI64::new(if config.matrix_enabled {
+        0
+    } else {
+        crate::clock::Clock::now_ms(&SystemClock)
+    }));
     #[allow(unused_mut)]
     let mut state = AppState {
         pool: pool.clone(),
@@ -58,6 +64,7 @@ pub async fn run() -> Result<(), RelayError> {
         signing_kid: config.signing_kid.clone(),
         relay_user_id: config.matrix_user_id.clone(),
         sync_ready: sync_ready.clone(),
+        last_matrix_sync_ms,
         metrics: Arc::new(Metrics::default()),
     };
 
@@ -117,7 +124,6 @@ pub async fn run() -> Result<(), RelayError> {
 
 pub mod test_support {
     use super::*;
-    use std::sync::Arc;
     use crate::clock::FrozenClock;
     use crate::crypto::at_rest::AtRestKey;
     use crate::crypto::ed25519;
@@ -128,6 +134,7 @@ pub mod test_support {
     use crate::state::RecordingSink;
     use ed25519_dalek::SigningKey;
     use rand::rngs::OsRng;
+    use std::sync::Arc;
 
     pub fn test_keys() -> (SigningKey, AtRestKey, Vec<u8>, Vec<u8>) {
         let signing = SigningKey::generate(&mut OsRng);
@@ -141,7 +148,11 @@ pub mod test_support {
     pub const TEST_SESSION: &str = "session_123456789";
     pub const TEST_NONCE: &str = "nonce_12345678901";
 
-    pub fn signed_metadata(domain: &str, display_name: &str, site_key: &SigningKey) -> SiteMetadata {
+    pub fn signed_metadata(
+        domain: &str,
+        display_name: &str,
+        site_key: &SigningKey,
+    ) -> SiteMetadata {
         use crate::crypto::base64url;
         use crate::crypto::jcs;
         let public = base64url::encode(&ed25519::public_key_raw(site_key));
@@ -182,6 +193,7 @@ pub mod test_support {
             signing_kid: crate::constants::DEFAULT_KID.into(),
             relay_user_id: crate::constants::MATRIX_USER_ID.into(),
             sync_ready: Arc::new(AtomicBool::new(true)),
+            last_matrix_sync_ms: Arc::new(AtomicI64::new(clock_ms)),
             metrics: Arc::new(Metrics::default()),
         };
         (state, sink, signing)

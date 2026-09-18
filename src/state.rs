@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
 use ed25519_dalek::SigningKey;
 
@@ -23,6 +23,7 @@ pub struct AppState {
     pub signing_kid: String,
     pub relay_user_id: String,
     pub sync_ready: Arc<AtomicBool>,
+    pub last_matrix_sync_ms: Arc<AtomicI64>,
     pub metrics: Arc<Metrics>,
 }
 
@@ -82,7 +83,11 @@ pub struct NoopSink;
 
 #[async_trait::async_trait]
 impl MessageSink for NoopSink {
-    async fn send_notice(&self, _room_id: &str, _body: &str) -> Result<(), crate::error::RelayError> {
+    async fn send_notice(
+        &self,
+        _room_id: &str,
+        _body: &str,
+    ) -> Result<(), crate::error::RelayError> {
         Ok(())
     }
 }
